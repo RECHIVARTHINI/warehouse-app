@@ -24,11 +24,16 @@ postgresql+psycopg2://USERNAME:URL_ENCODED_PASSWORD@SERVER.postgres.database.azu
 
 Create a **Linux** App Service using a supported Python runtime (Python 3.13 works with the explicit startup command below). In Deployment Center, connect this GitHub repository if desired, or use the included GitHub Actions workflow described below.
 
+Enable the App Service **system-assigned managed identity** under **Settings → Identity**. In the Key Vault, use the Azure RBAC permission model and grant this identity the **Key Vault Secrets User** role scoped to this vault. This lets the API read the database URL without placing the DB password in App Service settings. Microsoft documents this managed identity and role assignment pattern [here](https://learn.microsoft.com/en-us/azure/app-service/overview-managed-identity).
+
+Create a Key Vault secret named `DATABASE-URL` whose value is the PostgreSQL connection string from step 1. Your signed-in user also needs permission to create secrets (for example, **Key Vault Secrets Officer**) while setting this up.
+
 Set these App Service application settings under **Settings → Environment variables**:
 
 | Name | Value |
 |---|---|
-| `DATABASE_URL` | The PostgreSQL connection string above |
+| `KEY_VAULT_URL` | `https://YOUR-VAULT-NAME.vault.azure.net` |
+| `KEY_VAULT_SECRET_NAME` | `DATABASE-URL` |
 | `CORS_ORIGINS` | The exact Static Web Apps origin, for example `https://happy-field-123.azurestaticapps.net` |
 | `SCM_DO_BUILD_DURING_DEPLOYMENT` | `true` |
 
@@ -38,7 +43,7 @@ Set **Configuration → General settings → Startup Command** to:
 python -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-The App Service package root must be the `backend` directory, which contains `main.py` and `requirements.txt`. App Service installs the requirements during deployment. Do not put credentials in this repository.
+The App Service package root must be the `backend` directory, which contains `main.py` and `requirements.txt`. App Service installs the requirements during deployment. The backend retrieves the secret through `DefaultAzureCredential`: on Azure this uses the App Service managed identity; locally it can use an Azure CLI login if `KEY_VAULT_URL` is set. For ordinary local development, leave `KEY_VAULT_URL` blank and use `DATABASE_URL` in the ignored `backend/.env` file. Do not put credentials in this repository.
 
 After creating the frontend (next step), return here and set `CORS_ORIGINS` to its actual URL, then save/restart the API.
 
