@@ -1,5 +1,7 @@
 # Simple Inventory Management — AWS Deployment Practice
 
+> Deploying to Azure? See the [Azure deployment guide](README-AZURE.md) and the GitHub Actions workflows in `.github/workflows/`.
+
 A beginner-friendly project focused on deploying:
 - React + Vite frontend → AWS Amplify
 - FastAPI REST API → EC2 (Amazon Linux 2023)
