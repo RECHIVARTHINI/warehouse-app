@@ -1,8 +1,9 @@
-
 # Secrets and local environment
 .env
 .env.*
 !.env.example
+*firebase*.json
+serviceAccountKey.json
 
 # Python
 __pycache__/

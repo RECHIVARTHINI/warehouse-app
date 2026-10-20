@@ -8,6 +8,13 @@ from sqlalchemy.orm import Session
 from database import Base, engine, get_db
 from models import Product, StockAlert
 from schemas import BuyRequest, MessageResponse, ProductResponse, RestockRequest
+from firebase_service import (
+    log_purchase_audit,
+    log_warehouse_alert,
+    log_restock_audit,
+    get_recent_cloud_audits,
+    get_firestore_client,
+)
 
 
 def seed_products():
@@ -31,10 +38,12 @@ def seed_products():
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     seed_products()
+    # Initialize Firebase Firestore connection on startup
+    get_firestore_client()
     yield
 
 
-app = FastAPI(title="Simple Inventory API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Multi-Cloud Inventory API (AWS + Google Firebase)", version="2.0.0", lifespan=lifespan)
 
 origins = [
     origin.strip()
@@ -52,7 +61,46 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "inventory-api"}
+    return {
+        "status": "ok",
+        "service": "inventory-api",
+        "cloud_1": "AWS EC2 + AWS RDS PostgreSQL",
+        "cloud_2": "Google Cloud Firebase (Firestore)",
+    }
+
+
+@app.get("/cloud/status")
+def cloud_status():
+    """Provides architecture status showing Multi-Cloud integration."""
+    fb_connected = get_firestore_client() is not None
+    return {
+        "architecture": "Multi-Cloud Hybrid Inventory Management System",
+        "cloud_1": {
+            "provider": "Amazon Web Services (AWS)",
+            "components": [
+                "AWS EC2 (inventory-api-server)",
+                "AWS RDS PostgreSQL (inventory-db)",
+                "AWS VPC + Security Groups",
+            ],
+            "role": "Core API server & transactional relational database",
+            "status": "active",
+        },
+        "cloud_2": {
+            "provider": "Google Cloud Firebase",
+            "components": [
+                "Cloud Firestore NoSQL Document Database",
+                "Real-time Audit Logs & Warehouse Alerts",
+            ],
+            "role": "Real-time purchase audit trail & decentralized cloud alerting",
+            "status": "connected" if fb_connected else "offline",
+        },
+    }
+
+
+@app.get("/cloud/audits")
+def get_cloud_audits():
+    """Fetch live audit trail directly from Google Cloud Firestore."""
+    return get_recent_cloud_audits(limit=20)
 
 
 @app.get("/products", response_model=list[ProductResponse])
@@ -62,7 +110,7 @@ def list_products(db: Session = Depends(get_db)):
 
 @app.post("/store/buy", response_model=MessageResponse)
 def buy_product(payload: BuyRequest, db: Session = Depends(get_db)):
-    """Store use case: decrement stock and create a warehouse alert when below threshold."""
+    """Store use case: decrement stock in AWS RDS, log purchase audit & alerts to Google Cloud Firestore."""
     product = db.query(Product).filter(Product.id == payload.product_id).with_for_update().first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -70,8 +118,20 @@ def buy_product(payload: BuyRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="This product is out of stock")
 
     product.stock -= 1
+    db.commit()
+
+    # Cloud 2: Log real-time audit record to Google Cloud Firestore
+    log_purchase_audit(
+        product_id=product.id,
+        product_name=product.name,
+        new_stock=product.stock,
+        price_cents=product.price_cents,
+    )
+
     message = f"Purchase successful. {product.name} stock is now {product.stock}."
+
     if product.stock < product.threshold:
+        # Check AWS RDS for active alert
         active_alert = (
             db.query(StockAlert)
             .filter(StockAlert.product_id == product.id, StockAlert.is_resolved.is_(False))
@@ -82,8 +142,18 @@ def buy_product(payload: BuyRequest, db: Session = Depends(get_db)):
                 product_id=product.id,
                 message=f"Low stock: {product.name} has {product.stock} item(s); threshold is {product.threshold}.",
             ))
-        message += " Low-stock notification sent to Warehouse."
-    db.commit()
+            db.commit()
+
+        # Cloud 2: Dispatch low-stock alert to Google Cloud Firestore
+        log_warehouse_alert(
+            product_id=product.id,
+            product_name=product.name,
+            stock=product.stock,
+            threshold=product.threshold,
+        )
+
+        message += " Low-stock notification synced to AWS RDS and Google Cloud Firestore."
+
     return {"message": message}
 
 
@@ -113,7 +183,7 @@ def warehouse_alerts(db: Session = Depends(get_db)):
 
 @app.post("/warehouse/restock", response_model=MessageResponse)
 def restock_product(payload: RestockRequest, db: Session = Depends(get_db)):
-    """Warehouse use case: update the same inventory database and resolve open alerts."""
+    """Warehouse use case: update AWS RDS inventory, resolve alerts in both AWS and Google Cloud Firestore."""
     product = db.query(Product).filter(Product.id == payload.product_id).with_for_update().first()
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -128,4 +198,15 @@ def restock_product(payload: RestockRequest, db: Session = Depends(get_db)):
         alert.is_resolved = True
 
     db.commit()
-    return {"message": f"Restocked {product.name} by {payload.quantity}. New stock: {product.stock}. Open alerts resolved."}
+
+    # Cloud 2: Log restock event & resolve open alerts in Google Cloud Firestore
+    log_restock_audit(
+        product_id=product.id,
+        product_name=product.name,
+        quantity=payload.quantity,
+        new_stock=product.stock,
+    )
+
+    return {
+        "message": f"Restocked {product.name} by {payload.quantity}. New stock: {product.stock}. Alerts resolved on AWS & Google Cloud."
+    }
